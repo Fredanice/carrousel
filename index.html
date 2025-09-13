@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Citations — rotation auto</title>
+  <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
+  <style>
+    :root{
+      --bg: #f8f4e6;     /* beige papier */
+      --ink:#002fa7;     /* Bleu Klein */
+      --pad: clamp(16px, 5vw, 36px);
+      --boxw: min(900px, 94vw);
+      --radius: 12px;
+    }
+    html, body {
+      margin: 0; padding: 0; min-height: 100vh;
+      background: var(--bg); color: var(--ink);
+      font-family: "Courier New", monospace;
+    }
+    body {
+      padding:
+        calc(env(safe-area-inset-top, 0px))
+        calc(env(safe-area-inset-right, 0px))
+        calc(env(safe-area-inset-bottom, 0px))
+        calc(env(safe-area-inset-left, 0px));
+      display: grid; place-items: center;
+    }
+    .card {
+      width: var(--boxw);
+      max-width: var(--boxw);
+      max-height: calc(100vh - 8vh);
+      padding: var(--pad);
+      background: rgba(255,255,255,.85);
+      border: 1px solid #e0d8c3;
+      border-radius: var(--radius);
+      box-shadow: 0 8px 28px rgba(0,0,0,.08);
+      display: grid; place-items: center;
+      overflow: hidden;
+    }
+    #quote {
+      text-align: center;
+      line-height: 1.6;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      hyphens: auto;
+      white-space: pre-line; /* conserve les retours du .txt */
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="quote">Chargement…</div>
+  </div>
+
+  <script>
+    /* ---------- Config ---------- */
+    const DOC_ID       = "1cao2dKO5laTNxQTxIcGyI7inl2vLsr4ehei8ZqlalVk";
+    const GDOC_URL     = `https://docs.google.com/document/d/${DOC_ID}/export?format=txt`;
+    const SEPARATOR    = "///";   // séparateur entre citations
+    const ROTATE_SECONDS_DEFAULT = 15; // 15 secondes par défaut
+
+    /* ---------- Utilitaires ---------- */
+    const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    const pickRandom = arr => arr[Math.floor(Math.random() * arr.length)];
+    const qs = new URLSearchParams(location.search);
+    const ROTATE_SECONDS = (() => {
+      const t = parseInt(qs.get("t"), 10);
+      return Number.isFinite(t) && t > 0 ? t : ROTATE_SECONDS_DEFAULT;
+    })();
+
+    async function fetchDocText(){
+      const res  = await fetch(GDOC_URL, { cache: "no-store", credentials: "omit" });
+      const text = await res.text();
+      // NE PAS toucher aux \n → on les affiche via white-space: pre-line
+      return text
+        .replace(/\u00A0/g, " ")        // nbsp → espace
+        .replace(/[ \t\f\v]{2,}/g, " ") // compresse espaces multiples
+        .trim();
+    }
+
+    // Découpe et nettoyage simple
+    function parseQuotes(allTxt){
+      return allTxt
+        .split(/\s*\/\/\/\s*/g)   // séparateur /// (tolère espaces autour)
+        .map(s => s.trim())
+        .filter(Boolean);
+    }
+
+    // Taille cible en fonction de la longueur, puis "fit" dans la carte
+    const GLOBAL_MIN_PX = 12, GLOBAL_MAX_PX = 34;
+    const LEN_MIN = 60, LEN_MAX = 320;
+    const SIZE_AT_LEN_MIN = 30, SIZE_AT_LEN_MAX = 14;
+
+    function computeTargetSizePx(text){
+      const len = text.length;
+      const t = clamp((len - LEN_MIN) / (LEN_MAX - LEN_MIN), 0, 1);
+      const interp = SIZE_AT_LEN_MIN + (SIZE_AT_LEN_MAX - SIZE_AT_LEN_MIN) * t;
+      return clamp(interp, GLOBAL_MIN_PX, GLOBAL_MAX_PX);
+    }
+
+    function fitTextToContainer(el, container, {minPx, maxPx, step=0.5}){
+      let lo = minPx, hi = maxPx, best = minPx;
+      const fits = (px) => {
+        el.style.fontSize = px + "px";
+        return el.scrollHeight <= container.clientHeight && el.scrollWidth <= container.clientWidth;
+      };
+      for (let i = 0; i < 20; i++) {
+        const mid = Math.round((lo + hi) / 2 / step) * step;
+        if (mid === lo || mid === hi) break;
+        if (fits(mid)) { best = mid; lo = mid; } else { hi = mid; }
+      }
+      while (!(el.scrollHeight <= container.clientHeight && el.scrollWidth <= container.clientWidth) && best > minPx){
+        best = Math.max(minPx, best - step);
+        el.style.fontSize = best + "px";
+      }
+      el.style.fontSize = Math.max(minPx, best - 0.5) + "px";
+    }
+
+    function fitNow(){
+      const card  = document.querySelector(".card");
+      const quote = document.getElementById("quote");
+      const target = computeTargetSizePx(quote.textContent || "");
+      const bounds = { minPx: target - 6, maxPx: target + 4 };
+      fitTextToContainer(quote, card, bounds);
+    }
+    const scheduleFit = () => requestAnimationFrame(fitNow);
+
+    // Rotation : on parcourt toutes les citations en ordre aléatoire sans répétition
+    function shuffledIndices(n){
+      const a = Array.from({length:n}, (_,i)=>i);
+      for(let i=n-1;i>0;i--){
+        const j = Math.floor(Math.random()*(i+1));
+        [a[i],a[j]] = [a[j],a[i]];
+      }
+      return a;
+    }
+
+    /* ---------- Flux principal ---------- */
+    let quotes = [];
+    let order = [];
+    let cursor = 0;
+    let timer = null;
+
+    function showQuoteByIndex(i){
+      const el = document.getElementById('quote');
+      el.textContent = quotes[i];   // conserve les \n
+      scheduleFit();
+    }
+
+    function nextQuote(){
+      if (!quotes.length) return;
+      cursor = (cursor + 1) % order.length;
+      showQuoteByIndex(order[cursor]);
+    }
+
+    function startRotation(){
+      // (re)démarre le timer avec l’intervalle demandé
+      if (timer) clearInterval(timer);
+      timer = setInterval(nextQuote, ROTATE_SECONDS * 1000);
+    }
+
+    async function init(){
+      try{
+        const all  = await fetchDocText();
+        quotes     = parseQuotes(all);
+        if (!quotes.length) throw new Error("Aucune citation détectée (séparateur /// manquant).");
+
+        // Ordre aléatoire sans répétition
+        order  = shuffledIndices(quotes.length);
+        cursor = 0;
+
+        showQuoteByIndex(order[cursor]);
+        startRotation();
+
+        // Refit sur resize/orientation/resize observer
+        const onResize = () => scheduleFit();
+        window.addEventListener('resize', onResize, {passive:true});
+        window.addEventListener('orientationchange', onResize, {passive:true});
+        try { new ResizeObserver(onResize).observe(document.querySelector('.card')); } catch(_) {}
+        document.fonts?.ready?.then(scheduleFit);
+
+        // Bonus : si l’onglet est caché, on gèle le timer pour économiser (optionnel)
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) { if (timer) { clearInterval(timer); timer = null; } }
+          else { startRotation(); scheduleFit(); }
+        });
+
+      }catch(e){
+        document.getElementById('quote').textContent =
+          "Impossible de charger les citations.\n" + (e?.message || e);
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
